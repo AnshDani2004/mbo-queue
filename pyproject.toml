@@ -25,6 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Office/Business :: Financial :: Investment",
     "Topic :: Scientific/Engineering",
 ]
@@ -39,11 +40,11 @@ Source = "https://github.com/AnshDani2004/mbo-queue"
 Issues = "https://github.com/AnshDani2004/mbo-queue/issues"
 Changelog = "https://github.com/AnshDani2004/mbo-queue/blob/main/CHANGELOG.md"
 
-# Wheels: CPython 3.10-3.13, manylinux x86_64/aarch64 and macOS arm64/x86_64 (one native runner per
+# Wheels: CPython 3.10-3.14, manylinux x86_64/aarch64 and macOS arm64/x86_64 (one native runner per
 # architecture, see .github/workflows/wheels.yml). Every wheel runs the full test suite with the C++
 # core required, then the benchmark smoke test (which also checks C++ == Python output).
 [tool.cibuildwheel]
-build = "cp310-* cp311-* cp312-* cp313-*"
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux_*"
 test-command = "python {project}/tests/test_mboq.py && python {project}/scripts/bench.py --quick"
 environment = { MBOQ_REQUIRE_CORE = "1" }

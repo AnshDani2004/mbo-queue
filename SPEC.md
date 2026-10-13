@@ -1,5 +1,10 @@
 # mbo-queue specification (v0.6, 2026-10-13)
 
+> **Note on this public copy.** The rules in this document are identical to the frozen SPEC v0.6
+> used in the study of CME energy futures that this engine underpins (paper forthcoming). This
+> copy only removes references to private study files and one example count computed from market
+> data; no rule, definition or default differs.
+
 **Change log**
 
 * **v0.6** (2026-10-13) (a) section 4

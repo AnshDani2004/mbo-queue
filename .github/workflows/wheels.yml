@@ -1,8 +1,15 @@
 name: wheels
-# Builds and tests wheels (cibuildwheel) and the sdist on pull requests, version tags and manual
-# runs. Build only: there is no publish step in this file yet.
+# Builds and tests wheels (cibuildwheel) and the sdist on pushes to main, pull requests, version tags
+# and manual runs.
+# Publishing uses PyPI Trusted Publishing (OIDC); there are no API tokens in this repository.
+#   tag vX.Y.Z (no pre-release suffix) -> PyPI      (environment "pypi")
+#   tag vX.Y.ZrcN / aN / bN             -> TestPyPI  (environment "testpypi")
+#   workflow_dispatch                   -> TestPyPI only
+# A tag must equal "v" + the version in pyproject.toml, or nothing is published. Both environments
+# require the maintainer's approval before the publish job runs.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -46,3 +53,60 @@ jobs:
         with:
           name: sdist
           path: dist/*.tar.gz
+
+  check-version:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        run: |
+          want="v$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [ "$GITHUB_REF_NAME" != "$want" ]; then
+            echo "tag $GITHUB_REF_NAME does not match the pyproject version $want" >&2
+            exit 1
+          fi
+          if echo "$GITHUB_REF_NAME" | grep -Eq '(a|b|rc)[0-9]+$'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish-testpypi:
+    needs: [wheels, sdist, check-version]
+    if: >-
+      always() && needs.wheels.result == 'success' && needs.sdist.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (needs.check-version.result == 'success' && needs.check-version.outputs.prerelease == 'true'))
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/mbo-queue
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    needs: [wheels, sdist, check-version]
+    if: needs.check-version.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mbo-queue
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

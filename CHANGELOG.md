@@ -15,7 +15,7 @@ First public release.
   prob_log) are affected.
 - SPEC section 4, wording only: a truth fill is read at the filled order's resting position in the
   rebuilt book (its side and price), not the `F` record's own price field. The engines always did this.
-- Packaging: pre-built wheels for CPython 3.10 to 3.13 on manylinux (x86_64, aarch64) and macOS
+- Packaging: pre-built wheels for CPython 3.10 to 3.14 on manylinux (x86_64, aarch64) and macOS
   (arm64, x86_64); optional extra `[data]` for reading Databento files.
 
 ## 0.5 (2026-10-12)

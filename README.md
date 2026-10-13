@@ -54,7 +54,7 @@ pip install mbo-queue            # the engines; needs only numpy
 pip install "mbo-queue[data]"    # plus databento, pandas and pyarrow, to read DBN files
 ```
 
-Wheels are built for CPython 3.10 to 3.13 on Linux (x86_64, aarch64) and macOS (arm64, x86_64).
+Wheels are built for CPython 3.10 to 3.14 on Linux (x86_64, aarch64) and macOS (arm64, x86_64).
 Elsewhere pip builds from source, which needs a C++20 compiler.
 
 ## Quickstart
