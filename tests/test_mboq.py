@@ -374,10 +374,11 @@ def test_databento_sample_file_decodes_and_runs():
         print("   (skipped: sample file absent; run scripts/fetch_test_data.sh)")
         return
     try:
-        from mboq.io import load_mbo
+        import databento  # noqa: F401  (mboq.io imports it only inside load_mbo)
     except ImportError:
-        print("   (skipped: databento not installed)")
+        print('   (skipped: databento not installed; pip install "mbo-queue[data]")')
         return
+    from mboq.io import load_mbo
     rec, meta = load_mbo(path)
     assert meta["schema"] == "mbo" and len(rec["ts_event"]) == 4
     for r in both(rec, sample_times=[int(rec["ts_event"][-1])]):

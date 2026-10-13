@@ -4,6 +4,12 @@ Versions follow SPEC.md: package version 0.N.x implements SPEC v0.N. Every versi
 Python reference (`mboq.reference`) and the C++ core (`mboq._core`) bitwise equal, and every
 additive feature is off by default so earlier outputs are unchanged (checked by stored digests).
 
+## Unreleased
+
+- Tests: the DBN decode test now skips, instead of failing, when the sample file has been fetched
+  but `databento` is not installed (a plain `pip install mbo-queue` without `[data]`). Test-only; the
+  0.6.0 packages are unaffected.
+
 ## 0.6.0 (2026-10-13)
 
 First public release.
