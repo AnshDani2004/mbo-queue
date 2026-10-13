@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=77", "pybind11>=2.13"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mbo-queue"
+version = "0.6.0"
+description = "Exact FIFO queue reconstruction from CME market-by-order data, and a benchmark of the queue-position estimators used in market-making backtests"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Ansh Dani", email = "adani2@uchicago.edu"}]
+keywords = ["market microstructure", "order book", "market by order", "queue position", "backtesting", "CME", "Databento"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+data = ["databento>=0.87", "pandas>=2.2", "pyarrow>=13"]
+
+[project.urls]
+Homepage = "https://github.com/AnshDani2004/mbo-queue"
+Source = "https://github.com/AnshDani2004/mbo-queue"
+Issues = "https://github.com/AnshDani2004/mbo-queue/issues"
+Changelog = "https://github.com/AnshDani2004/mbo-queue/blob/main/CHANGELOG.md"
+
+# Wheels: CPython 3.10-3.13, manylinux x86_64/aarch64 and macOS arm64/x86_64 (one native runner per
+# architecture, see .github/workflows/wheels.yml). Every wheel runs the full test suite with the C++
+# core required, then the benchmark smoke test (which also checks C++ == Python output).
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = "*-musllinux_*"
+test-command = "python {project}/tests/test_mboq.py && python {project}/scripts/bench.py --quick"
+environment = { MBOQ_REQUIRE_CORE = "1" }
+
+[tool.cibuildwheel.macos]
+environment = { MBOQ_REQUIRE_CORE = "1", MACOSX_DEPLOYMENT_TARGET = "10.15" }

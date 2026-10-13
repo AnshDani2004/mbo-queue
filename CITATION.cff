@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use mbo-queue, please cite it as below."
+title: "mbo-queue: exact FIFO queue reconstruction from CME market-by-order data and a benchmark of MBP queue-position estimators"
+type: software
+authors:
+  - family-names: Dani
+    given-names: Ansh
+    affiliation: University of Chicago
+version: 0.6.0
+date-released: 2026-10-13
+license: MIT
+repository-code: "https://github.com/AnshDani2004/mbo-queue"
+keywords:
+  - market microstructure
+  - limit order book
+  - market by order
+  - queue position
+  - backtesting

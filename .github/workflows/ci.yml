@@ -1,0 +1,35 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build and install (not editable, so the installed package is what is tested)
+        run: python -m pip install ".[data]"
+      - name: Fetch Databento's public 4-record sample for the decode test
+        run: bash scripts/fetch_test_data.sh
+      - name: Tests (C++ core required)
+        env:
+          MBOQ_REQUIRE_CORE: "1"
+        run: python tests/test_mboq.py
+      - name: Benchmark smoke test (also checks C++ == Python output)
+        run: python scripts/bench.py --quick
+      - name: Synthetic end-to-end run
+        run: python scripts/run_day.py --synthetic --out "$RUNNER_TEMP/run_day"

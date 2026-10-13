@@ -1,0 +1,13 @@
+__pycache__/
+*.so
+*.egg-info/
+build/
+dist/
+wheelhouse/
+.venv/
+results/
+*.parquet
+*.npz
+*.npy
+*.dbn
+*.zst
