@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbo-queue"
-version = "0.6.0rc1"
+version = "0.6.0"
 description = "Exact FIFO queue reconstruction from CME market-by-order data, and a benchmark of the queue-position estimators used in market-making backtests"
 readme = "README.md"
 requires-python = ">=3.10"
