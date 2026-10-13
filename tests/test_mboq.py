@@ -1236,6 +1236,19 @@ V03_DIGESTS = ["c6c230003034bfe5a2a69bbd98557d607950d2be0aa24d8585f5f47ed9557dc1
                "55e30f963d6ddab18c61e712879cc11d560171b0d9d38eb810297e842e20d3d3",
                "38d326610672e4c698b395fbbe18c51cb809f01fbae7c3412594703006ece233",
                "772ccc24483a07ea2a34c27f12c2591d121c53405342a636364a6cf970501555"]
+# The full digests include the estimators' floating-point state, which goes through libm (pow, log1p), so they
+# were recorded on, and are checked on, macOS arm64 only (Apple libm); C++ == Python is checked on every platform
+# by the bitwise tests. Everywhere: the input streams and the book-only outputs (labels, FIFO ranks, samples,
+# queue rows), which use no floating point, must equal these stored digests (recorded with numpy 2.5.4).
+REFERENCE_PLATFORM = sys.platform == "darwin" and __import__("platform").machine() == "arm64"
+STREAM_DIGESTS = ["5f6794940de3f041945a55dc3e028068e8385d6ed0b6efdb0c7d2f982f5d2660",
+                  "5dc9a6218603465d17bd880faa0b98795ca194e5b00024187b855015c22c81a9",
+                  "92c33fe8bbf8bd8e91ec39b77436c8b456d8c2dc1ccaa7604d3c5387daa727e1",
+                  "000c58d792d3d1908a7d08e9c07799d7829514982f198845f782ac4f26276713"]
+V03_BOOK_DIGESTS = ["055e46878e8c13be9b089261e8876a6fd5581d2e64034a69f2dd479c3535a438",
+                    "24140b11f058472e5b5b76b0db34a9fb763917b670623a55ae0718d5f08534b5",
+                    "9817f2d83e9e09119ed51a0fbccfd74a762a2a70e0ccf554c485074fa8f9141a",
+                    "e03b45399ec240b31891061c844a97628d0498c419dc9d4daabd85246c61bcab"]
 
 
 def _digest_streams():
@@ -1268,15 +1281,49 @@ def _digest(r):
     return h.hexdigest()
 
 
+def _book_digest(r):
+    """Digest of the outputs that involve no floating point: labels, FIFO ranks, book samples, queue rows."""
+    import hashlib
+    h = hashlib.sha256()
+    for k in sorted(r["labels"]):
+        x = np.asarray(r["labels"][k])
+        h.update(f"labels.{k}:{x.dtype.str}:{x.shape};".encode())
+        h.update(x.tobytes())
+    for k in ("fifo_rank", "fifo_ts", "samples", "queue"):
+        x = np.asarray(r[k])
+        h.update(f"{k}:{x.dtype.str}:{x.shape};".encode())
+        h.update(x.tobytes())
+    return h.hexdigest()
+
+
+def _stream_digest(rec):
+    import hashlib
+    return hashlib.sha256(b"".join(np.ascontiguousarray(rec[c]).tobytes() for c in sorted(rec))).hexdigest()
+
+
+def test_digest_streams_and_book_outputs_match_on_every_platform():
+    # Known answer: the synthetic input streams and the book-only outputs of both engines equal the stored digests
+    # on every platform (no floating point is involved); the full v0.3 digests also on the reference platform.
+    for j, ((rec, tick, kw, rk), s_want, b_want, want) in enumerate(
+            zip(_digest_streams(), STREAM_DIGESTS, V03_BOOK_DIGESTS, V03_DIGESTS)):
+        assert _stream_digest(rec) == s_want, f"synthetic input stream {j} differs on this platform"
+        runs = [Reference(tick=tick, **kw).run(rec, **rk)] + ([fast.run(rec, tick=tick, **kw, **rk)] if HAVE_CORE else [])
+        for r in runs:
+            assert _book_digest(r) == b_want, f"book-only outputs of stream {j} differ"
+            if REFERENCE_PLATFORM:
+                assert _digest(r) == want, j
+
+
 def test_track_flag_off_and_on_leave_every_other_output_unchanged():
     # Known answer: with order_tracks off (the default) both engines return exactly the committed v0.3 engines'
-    # outputs (digests above) and no "tracks" key; with it on, the same digests (every other output unchanged)
-    # plus "tracks".
-    for (rec, tick, kw, rk), want in zip(_digest_streams(), V03_DIGESTS):
+    # outputs and no "tracks" key; with it on, the same outputs (every other output unchanged) plus "tracks". On the
+    # reference platform "the same" is the stored v0.3 digest; elsewhere it is the flag-off run's digest.
+    for (rec, tick, kw, rk), stored in zip(_digest_streams(), V03_DIGESTS):
         runs = [lambda **f: Reference(tick=tick, **kw).run(rec, **rk, **f)]
         if HAVE_CORE:
             runs.append(lambda **f: fast.run(rec, tick=tick, **kw, **rk, **f))
         for run in runs:
+            want = stored if REFERENCE_PLATFORM else _digest(run())
             for flag in ({}, {"order_tracks": False}, {"order_tracks": True}):
                 r = run(**flag)
                 assert ("tracks" in r) == bool(flag.get("order_tracks")), flag
@@ -1580,13 +1627,19 @@ def _track_digest(r):
 
 def test_v05_zero_horizon_is_v04_exactly():
     # Known answer: with track_horizon_ns = 0 (the default, or explicit) both engines return exactly the committed
-    # v0.4 tracks (digests above, no est_stop_t / e0 keys) and the v0.3 digests of every other output; with H > 0 every
-    # non-track output keeps its v0.3 digest.
-    for (rec, tick, kw, rk), want, want_t in zip(_digest_streams(), V03_DIGESTS, V04_TRACK_DIGESTS):
+    # v0.4 tracks (no est_stop_t / e0 keys) and the v0.3 output of everything else; with H > 0 every non-track output
+    # keeps its v0.3 value. On the reference platform these are the stored digests; elsewhere (libm differs) the
+    # digests of the engine's own default run, so the equalities between flags are still checked.
+    for (rec, tick, kw, rk), stored, stored_t in zip(_digest_streams(), V03_DIGESTS, V04_TRACK_DIGESTS):
         runs = [lambda **f: Reference(tick=tick, **kw).run(rec, **rk, order_tracks=True, **f)]
         if HAVE_CORE:
             runs.append(lambda **f: fast.run(rec, tick=tick, **kw, **rk, order_tracks=True, **f))
         for run in runs:
+            if REFERENCE_PLATFORM:
+                want, want_t = stored, stored_t
+            else:
+                r0 = run()
+                want, want_t = _digest(r0), _track_digest(r0)
             for flag in ({}, {"track_horizon_ns": 0}):
                 r = run(**flag)
                 assert set(r["tracks"]) == set(TRACK_COLUMNS) and _track_digest(r) == want_t and _digest(r) == want

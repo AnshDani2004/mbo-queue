@@ -142,14 +142,18 @@ Everything below runs in the test suite or the scripts in this repository, on sy
   FIFO violations, label outcomes, iceberg refills, out-of-order fills, every track and horizon case.
 * **No look-ahead.** Book samples and queue snapshots before time T do not change when every record
   after T is scrambled or deleted.
-* **Backward compatibility.** Each new feature is off by default, and stored SHA-256 digests of
-  earlier versions' outputs are checked, so turning a feature off reproduces the earlier version.
+* **Backward compatibility.** Each new feature is off by default, and turning it off reproduces the
+  earlier version. Stored SHA-256 digests of earlier versions' outputs are checked in full on macOS
+  arm64, where they were recorded. The estimators' floating-point state goes through the system
+  math library (`pow`, `log1p`), whose last bits can differ between platforms. So elsewhere only
+  the input streams and the book outputs (labels, FIFO ranks, samples, queue rows) are compared
+  with stored digests, and the flag-off/flag-on equalities are checked within the run.
 * **Real decode path.** One test decodes Databento's public 4-record sample file (fetched by
   `scripts/fetch_test_data.sh`, pinned by commit and SHA-256; the test skips without it).
 
 ```bash
 bash scripts/fetch_test_data.sh      # optional: the DBN decode test
-python tests/test_mboq.py            # 50 tests (or: pytest tests)
+python tests/test_mboq.py            # 51 tests (or: pytest tests)
 python scripts/synthetic_validation.py
 ```
 
