@@ -101,6 +101,27 @@ exchange chooses which order cancels.
 and return the same dict of numpy arrays: `stats`, `fifo_rank`, `shadows`, `labels`, `samples`,
 `queue`, and `tracks` with `order_tracks=True`.
 
+Options of `run()` that change the rules are all off by default, and each one switched off gives
+the previous version's output byte for byte:
+
+| option | default | what it does (SPEC) |
+|---|---|---|
+| `order_tracks` | `False` | order-anchored estimator tracks for real orders (section 9, v0.4) |
+| `track_horizon_ns` | `0` | keep a filled order's estimators running until `t_start + H` (section 9, v0.5) |
+| `fill_lot_rounding` | `False` | round estimated fills to whole lots, as hftbacktest does (v0.6) |
+| `truth_record_price` | `False` | read a shadow's true fills at the `F` record's own price and side (section 4, v0.7) |
+
+`truth_record_price` is a sensitivity, not a correction. By default a fill is located where the
+filled order rests in the rebuilt book. On CME data a known-id `F` record can carry a price other
+than its order's resting price, and it is not settled which of the two locates the fill. With
+`truth_record_price=True` the record's own price and side are used instead (side `N` takes the
+order's side): a fill at the shadow's price fills it unless the filled order rests at that level
+ahead of the shadow, and a fill at a worse price is a trade-through. Running both settings shows
+how much a result depends on which reading of those records is right. Only the shadows' truth
+side changes (true fills and fill times, the queue-error sums taken while the truth is unfilled,
+the shadow's end) and the `shadow_fifo_anomaly` counter; labels, FIFO ranks, book samples, queue
+snapshots and order tracks are unaffected.
+
 ## Running on Databento data
 
 ```bash
@@ -153,7 +174,7 @@ Everything below runs in the test suite or the scripts in this repository, on sy
 
 ```bash
 bash scripts/fetch_test_data.sh      # optional: the DBN decode test
-python tests/test_mboq.py            # 51 tests (or: pytest tests)
+python tests/test_mboq.py            # 53 tests (or: pytest tests)
 python scripts/synthetic_validation.py
 ```
 
@@ -199,7 +220,7 @@ and no results computed from market data.
 See [CITATION.cff](CITATION.cff), or:
 
 > Dani, A. (2026). mbo-queue: exact FIFO queue reconstruction from CME market-by-order data and a
-> benchmark of MBP queue-position estimators (version 0.6.0). https://github.com/AnshDani2004/mbo-queue
+> benchmark of MBP queue-position estimators (version 0.7.0). https://github.com/AnshDani2004/mbo-queue
 
 ## Layout
 

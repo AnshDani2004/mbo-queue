@@ -104,6 +104,7 @@ class _Track:
 
 class Reference:
     lot_round = False     # SPEC v0.6 fill_lot_rounding (set by run())
+    truth_record = False  # SPEC v0.7 truth_record_price (sensitivity; set by run())
     def __init__(self, tick: int, label_ticks: int = 5, shadow_size: int = 1, horizon_ns: int = 60_000_000_000,
                  sample_levels: int = 10):
         self.tick, self.label_ticks, self.S, self.H = tick, label_ticks, shadow_size, horizon_ns
@@ -418,6 +419,9 @@ class Reference:
         if o is None:
             return
         bside, bprice = o["side"], o["price"]
+        if self.truth_record:                    # SPEC v0.7 sensitivity: the record's side (N -> the order's) and price
+            bside = side if side in ("B", "A") else bside
+            bprice = price
         for sh in self.shadows:
             if sh.filled >= sh.size or sh.side != bside:
                 continue
@@ -533,7 +537,8 @@ class Reference:
 
     # ------------------------------------------------------------------ driver
     def run(self, rec: dict, place_times=(), sample_times=(), queue_times=(), queue_levels: int = 5,
-            order_tracks: bool = False, track_horizon_ns: int = 0, fill_lot_rounding: bool = False):
+            order_tracks: bool = False, track_horizon_ns: int = 0, fill_lot_rounding: bool = False,
+            truth_record_price: bool = False):
         """rec: dict of equal-length numpy arrays (ts_event, order_id, price, size, flags, action, side).
         action/side are single-byte codes (b'A' or ord). Returns a results dict (see SPEC);
         results["tracks"] (SPEC 9) only with order_tracks=True. track_horizon_ns = H > 0 (SPEC 9, v0.5) runs
@@ -541,6 +546,7 @@ class Reference:
         self.order_tracks = bool(order_tracks)
         self.track_h = check_track_horizon(track_horizon_ns)
         self.lot_round = bool(fill_lot_rounding)      # SPEC v0.6: estimated fills rounded to whole lots (>= 0.5 lot)
+        self.truth_record = bool(truth_record_price)  # SPEC v0.7: shadow truth at the F record's side and price
         place_times = np.asarray(place_times, dtype=np.int64)
         sample_times = np.asarray(sample_times, dtype=np.int64)
         queue_times = check_queue_args(queue_times, queue_levels)

@@ -4,11 +4,17 @@ Versions follow SPEC.md: package version 0.N.x implements SPEC v0.N. Every versi
 Python reference (`mboq.reference`) and the C++ core (`mboq._core`) bitwise equal, and every
 additive feature is off by default so earlier outputs are unchanged (checked by stored digests).
 
-## Unreleased
+## 0.7.0 (2026-10-14)
 
+- New `run()` option `truth_record_price` (SPEC v0.7, section 4; default off, so v0.6 outputs are
+  byte-identical): a sensitivity in which a known-id `F` record moves shadows by the record's own
+  price and side (side `N` takes the filled order's side) instead of the filled order's resting
+  position in the rebuilt book. A fill at the shadow's price fills it unless the filled order rests
+  at that level ahead of the shadow; a fill at a worse price is a trade-through. Only shadow truth
+  outputs and the `shadow_fifo_anomaly` counter can change. Two new tests: a hand-computed case,
+  and C++ = Python bitwise on randomized streams with repriced and side-`N` `F` records.
 - Tests: the DBN decode test now skips, instead of failing, when the sample file has been fetched
-  but `databento` is not installed (a plain `pip install mbo-queue` without `[data]`). Test-only; the
-  0.6.0 packages are unaffected.
+  but `databento` is not installed (a plain `pip install mbo-queue` without `[data]`). Test-only.
 
 ## 0.6.0 (2026-10-13)
 

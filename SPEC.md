@@ -1,11 +1,20 @@
-# mbo-queue specification (v0.6, 2026-10-13)
+# mbo-queue specification (v0.7, 2026-10-13)
 
-> **Note on this public copy.** The rules in this document are identical to the frozen SPEC v0.6
-> used in the study of CME energy futures that this engine underpins (paper forthcoming). This
-> copy only removes references to private study files and one example count computed from market
-> data; no rule, definition or default differs.
+> **Note on this public copy.** With default settings, the rules are identical to the frozen v0.6
+> used in the study; `truth_record_price` is an optional sensitivity added in v0.7. The study is of
+> CME energy futures, and this engine underpins it (paper forthcoming). This copy only removes
+> references to private study files and one example count computed from market data; no rule,
+> definition or default differs from the study's copy.
 
 **Change log**
+
+* **v0.7** (2026-10-13; a sensitivity, not part of the frozen v0.6 rules) section 4 only: new `run()` parameter
+  `truth_record_price` (default False = v0.6 exactly, byte-identical; tested). With True, a known-id `F` record
+  moves shadows by the record's own price and side (side `N` -> the filled order's resting side) instead of the
+  filled order's resting position: (a) a fill at the shadow's price fills it unless the filled order rests at that
+  level ahead of the shadow (an order resting elsewhere is in no ahead set there); (b) a fill at a worse price is a
+  trade-through. The `shadow_fifo_anomaly` counter is evaluated at the record's level. Tests: a hand-computed case
+  and C++ = Python bitwise on randomized streams with repriced and side-N `F` records.
 
 * **v0.6** (2026-10-13) (a) section 4
   wording clarified, no behaviour change: a truth fill is read at the filled order's resting position in the
@@ -133,7 +142,8 @@ boundary (no shadow if that side is empty).
   (b) at a price worse than p for the shadow (bid: < p; ask: > p)
   where side and price are those of the **filled order's resting position in the rebuilt book** (the order
   the record's id names), not the record's own price field (v0.6 clarification; on CME data some known-id `F`
-  records carry a different price, so the record's own price field is not used),
+  records carry a different price, so the record's own price field is not used; v0.7 adds
+  `truth_record_price`, off by default, which reads the record's own side and price instead, see the change log),
   fills the shadow by min(record size, remaining), at that record's `ts_event`. Rationale: under
   FIFO the exchange could only have reached that order after exhausting the ahead set and the
   shadow. A case-(a) fill while ahead volume not yet consumed by earlier `F` records of the same event is

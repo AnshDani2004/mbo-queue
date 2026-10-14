@@ -55,7 +55,7 @@ def both(rec, **kw):
                                    if k in ("label_ticks", "shadow_size", "horizon_ns", "sample_levels")})
            .run(rec, **{k: v for k, v in kw.items() if k in ("place_times", "sample_times", "queue_times",
                                                               "queue_levels", "order_tracks", "track_horizon_ns",
-                                                              "fill_lot_rounding")})]
+                                                              "fill_lot_rounding", "truth_record_price")})]
     if HAVE_CORE:
         out.append(fast.run(rec, tick=TICK, **kw))
     return out
@@ -1711,6 +1711,58 @@ def test_v06_cpp_equals_reference_bitwise_with_lot_rounding():
         _assert_same_output(a0, b0, (j, mode, "off"))
         changed += int((np.asarray(a["shadows"]["est_filled"]) != np.asarray(a0["shadows"]["est_filled"])).sum())
         changed += int((np.asarray(a["tracks"]["est_first_fill_t"]) != np.asarray(a0["tracks"]["est_first_fill_t"])).sum())
+    assert changed > 0
+
+
+def test_v07_truth_record_price_hand_computed():
+    # SPEC v0.7 truth_record_price (sensitivity): a known-id F record on order 1, which rests at bid 100 AHEAD of the
+    # shadow (placed at t=3 behind orders 1 and 2), carries price 99. Default (resting position, v0.6): the fill is at
+    # 100 by an order ahead of the shadow, so no truth fill. Record reading: 99 is worse than the shadow's 100 for a
+    # bid, a trade-through, so the shadow is truly filled. A side-N record takes the order's side.
+    for fside in ("B", "N"):
+        rows = BASE + [(10, "T", "A", 99, 1, 0, 0), (10, "F", fside, 99, 1, 1, 0), (10, "M", "B", 100, 2, 1, L)]
+        for trp, want in ((False, 0), (True, 1)):
+            for r in both(recs(rows), place_times=[3], horizon_ns=100, truth_record_price=trp):
+                sh = r["shadows"]
+                b = sh["side"] == 1
+                assert sh["q0"][b][0] == 5
+                assert sh["true_filled"][b][0] == want, (fside, trp, sh["true_filled"][b][0])
+
+
+def test_v07_cpp_equals_reference_bitwise_with_truth_record_price():
+    # Randomized streams with some known-id F records repriced by one tick (and some given side N): both engines
+    # agree bitwise with the option on; with it off the repriced stream gives the same output as the original stream
+    # (the default engine never reads an F record's own price for shadows); the option changes truth fills somewhere.
+    if not HAVE_CORE:
+        print("   (skipped: C++ core not built)")
+        return
+    changed = 0
+    for j, mode in enumerate(("order", "volume", "tail", "front")):
+        rec, st, truth, ex = generate(n_events=4000, sample_every=41, seed=1700 + j, cancel_mode=mode, p_modify=0.12,
+                                      p_market=0.18, max_mkt=30, p_clear=0.002, p_iceberg=0.2, p_fill_shuffle=0.3)
+        rec2 = {k: np.array(v, copy=True) for k, v in rec.items()}
+        act = np.asarray(rec2["action"]).astype("S1")
+        isf = np.where(act == b"F")[0]
+        rng = np.random.default_rng(1700 + j)
+        pick = isf[rng.random(len(isf)) < 0.08]
+        rec2["price"][pick] += np.where(rng.random(len(pick)) < 0.5, -1, 1) * ex.tick
+        sidep = pick[rng.random(len(pick)) < 0.3]
+        side = np.asarray(rec2["side"]).astype("S1").copy()
+        side[sidep] = b"N"
+        rec2["side"] = side
+        ts = rec["ts_event"].astype(np.int64)
+        kw = dict(label_ticks=5, shadow_size=(1, 3)[j % 2], horizon_ns=150_000_000, sample_levels=6)
+        rk = dict(place_times=np.arange(ts[30], ts[-1], 1_500_000), sample_times=st, queue_times=st[::2], queue_levels=4,
+                  order_tracks=True, track_horizon_ns=60_000_000, fill_lot_rounding=True)
+        a = Reference(tick=ex.tick, **kw).run(rec2, **rk, truth_record_price=True)
+        b = fast.run(rec2, tick=ex.tick, **rk, **kw, truth_record_price=True)
+        _assert_same_output(a, b, (j, mode, "truth_record_price"))
+        _assert_same_tracks_h(a, b, (j, mode, "truth_record_price"))
+        b0 = fast.run(rec2, tick=ex.tick, **rk, **kw)
+        b_orig = fast.run(rec, tick=ex.tick, **rk, **kw)
+        for k in ("true_filled", "true_t_fill", "est_filled"):
+            assert np.array_equal(np.asarray(b0["shadows"][k]), np.asarray(b_orig["shadows"][k])), (j, k)
+        changed += int((np.asarray(b["shadows"]["true_filled"]) != np.asarray(b0["shadows"]["true_filled"])).sum())
     assert changed > 0
 
 

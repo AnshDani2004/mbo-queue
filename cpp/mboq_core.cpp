@@ -151,9 +151,9 @@ __attribute__((noinline)) static double phi(int k, double front, double back) {
 class Engine {
    public:
     Engine(int64_t tick, int64_t label_ticks, int64_t shadow_size, int64_t horizon, int64_t nlev, int64_t qlev,
-           bool order_tracks, int64_t track_horizon, bool fill_lot_rounding = false)
+           bool order_tracks, int64_t track_horizon, bool fill_lot_rounding = false, bool truth_record_price = false)
         : tick_(tick), label_ticks_(label_ticks), S_(shadow_size), H_(horizon), N_(nlev), QL_(qlev),
-          TH_(track_horizon), tracks_on_(order_tracks), LR_(fill_lot_rounding) {
+          TH_(track_horizon), tracks_on_(order_tracks), LR_(fill_lot_rounding), TRP_(truth_record_price) {
         ids_.reserve(1 << 20);
         pool_.reserve(1 << 20);
     }
@@ -252,6 +252,7 @@ class Engine {
     int64_t last_boundary_ = -1;  // ts_event of the last event boundary (-1: none yet)
     bool tracks_on_;
     bool LR_ = false;             // SPEC v0.6 fill_lot_rounding (hftbacktest half-lot rule)
+    bool TRP_ = false;            // SPEC v0.7 truth_record_price (sensitivity): shadow truth at the F record's price
     int64_t st_[NSTAT] = {};
     int64_t ts_ = 0;
     bool at_boundary_ = true, prev_snapshot_ = false;
@@ -690,7 +691,7 @@ class Engine {
         }
     }
 
-    void on_fill(uint64_t id, char /*side*/, int64_t /*price*/, int64_t size) {
+    void on_fill(uint64_t id, char rec_side, int64_t rec_price, int64_t size) {
         st_[ST_FILLS]++;
         auto it = ids_.find(id);
         if (it == ids_.end()) {
@@ -722,21 +723,28 @@ class Engine {
         ev_fill_[id] += size;
         // truth shadows (SPEC 4) on the order's side that this fill reaches: (a) at the order's
         // price, placed before the order joined (stamp below the order's), or (b) trade-through,
-        // the fill is at a price worse than the shadow's
-        const int s = nlive_ > 0 ? side_ix(o.side) : -1;
+        // the fill is at a price worse than the shadow's. SPEC v0.7 truth_record_price (sensitivity,
+        // default off): read side and price from the F record instead (side N -> the order's side);
+        // an order not resting at that level is in no shadow's ahead set there.
+        const char fside = (TRP_ && (rec_side == 'B' || rec_side == 'A')) ? rec_side : o.side;
+        const int64_t fprice = TRP_ ? rec_price : o.price;
+        const bool here = fside == o.side && fprice == o.price;
+        const Level* flv = here ? lv : level(fside, fprice);
+        const int s = nlive_ > 0 ? side_ix(fside) : -1;
         if (s < 0) return;
         for (ShadowLevel& L : sl_[s]) {
-            const bool same = L.price == o.price;
-            const bool through = s == 0 ? o.price < L.price : o.price > L.price;  // Shadow::worse
+            const bool same = L.price == fprice;
+            const bool through = s == 0 ? fprice < L.price : fprice > L.price;  // Shadow::worse
             if (!same && !through) continue;
             for (uint32_t slot : L.members) {
                 Shadow& sh = shadows_[slot];
-                if (same && sh.stamp > o.stamp) break;  // members by stamp: the rest are behind the order
+                if (same && here && sh.stamp > o.stamp) break;  // members by stamp: the rest are behind the order
                 if (sh.filled >= sh.size) continue;
                 if (same) {
                     int64_t left = 0;
-                    for (uint32_t j = lv->head; j != NIL && pool_[j].stamp < sh.stamp; j = pool_[j].next)
-                        left += std::max<int64_t>(pool_[j].size - ev_fill(pool_[j].id), 0);
+                    if (flv != nullptr)
+                        for (uint32_t j = flv->head; j != NIL && pool_[j].stamp < sh.stamp; j = pool_[j].next)
+                            left += std::max<int64_t>(pool_[j].size - ev_fill(pool_[j].id), 0);
                     if (left > 0) st_[ST_SHADOW_FIFO_ANOMALY]++;
                 }
                 const int64_t take = std::min(size, sh.size - sh.filled);
@@ -956,10 +964,11 @@ py::dict run(py::array_t<uint64_t, py::array::c_style | py::array::forcecast> ts
              py::array_t<int64_t, py::array::c_style | py::array::forcecast> sample_times, int64_t tick,
              int64_t label_ticks, int64_t shadow_size, int64_t horizon_ns, int64_t sample_levels,
              py::array_t<int64_t, py::array::c_style | py::array::forcecast> queue_times, int64_t queue_levels,
-             bool order_tracks, int64_t track_horizon_ns, bool fill_lot_rounding) {
+             bool order_tracks, int64_t track_horizon_ns, bool fill_lot_rounding, bool truth_record_price) {
     const size_t n = (size_t)ts.size();
     if (track_horizon_ns < 0) throw py::value_error("track_horizon_ns must be >= 0");
-    Engine e(tick, label_ticks, shadow_size, horizon_ns, sample_levels, queue_levels, order_tracks, track_horizon_ns, fill_lot_rounding);
+    Engine e(tick, label_ticks, shadow_size, horizon_ns, sample_levels, queue_levels, order_tracks, track_horizon_ns,
+             fill_lot_rounding, truth_record_price);
     {
         py::gil_scoped_release nogil;
         e.run(ts.data(), oid.data(), price.data(), size.data(), flags.data(), action.data(), side.data(), n,

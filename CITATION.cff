@@ -6,8 +6,8 @@ authors:
   - family-names: Dani
     given-names: Ansh
     affiliation: University of Chicago
-version: 0.6.0
-date-released: 2026-10-13
+version: 0.7.0
+date-released: 2026-10-14
 license: MIT
 repository-code: "https://github.com/AnshDani2004/mbo-queue"
 keywords:
