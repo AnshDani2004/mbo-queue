@@ -30,6 +30,7 @@
 #include <limits>
 #include <map>
 #include <queue>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -192,6 +193,9 @@ class Engine {
                 st_[ST_IMPLICIT_CLEAR]++;
                 clear_all();
             }
+            if ((a == 'A' || a == 'M') && s != 'B' && s != 'A')  // 0.7.1: rejected, as in the reference
+                throw std::invalid_argument("record " + std::to_string(i) + ": action " + std::string(1, a) +
+                                            " needs side B or A, got side code " + std::to_string((unsigned)side[i]));
             switch (a) {
                 case 'A': on_add(id, s, p, q, snap); break;
                 case 'C': on_cancel(id, q); break;
@@ -965,8 +969,30 @@ py::dict run(py::array_t<uint64_t, py::array::c_style | py::array::forcecast> ts
              int64_t label_ticks, int64_t shadow_size, int64_t horizon_ns, int64_t sample_levels,
              py::array_t<int64_t, py::array::c_style | py::array::forcecast> queue_times, int64_t queue_levels,
              bool order_tracks, int64_t track_horizon_ns, bool fill_lot_rounding, bool truth_record_price) {
+    // 0.7.1: the checks of reference.check_engine_args / check_records / check_sorted_times / check_queue_args,
+    // with the same messages, so the core is safe to call directly (fast.run runs the Python checks first)
+    if (tick < 1) throw py::value_error("tick must be >= 1");
+    if (sample_levels < 1) throw py::value_error("sample_levels must be >= 1");
+    const char* const cols[7] = {"ts_event", "order_id", "price", "size", "flags", "action", "side"};
+    const py::array* const arrs[7] = {&ts, &oid, &price, &size, &flags, &action, &side};
     const size_t n = (size_t)ts.size();
+    for (int j = 0; j < 7; ++j) {
+        if (arrs[j]->ndim() != 1) throw py::value_error(std::string("record column '") + cols[j] + "' must be 1-D");
+        if ((size_t)arrs[j]->size() != n)
+            throw py::value_error(std::string("record column '") + cols[j] + "' has length " +
+                                  std::to_string(arrs[j]->size()) + ", expected " + std::to_string(n) +
+                                  " (the length of ts_event)");
+    }
     if (track_horizon_ns < 0) throw py::value_error("track_horizon_ns must be >= 0");
+    auto check_sorted = [](const py::array_t<int64_t, py::array::c_style | py::array::forcecast>& t, const char* name) {
+        const int64_t* d = t.data();
+        for (py::ssize_t j = 1; j < t.size(); ++j)
+            if (d[j] < d[j - 1]) throw py::value_error(std::string(name) + " must be sorted (non-decreasing)");
+    };
+    check_sorted(place_times, "place_times");
+    check_sorted(sample_times, "sample_times");
+    if (queue_levels < 0) throw py::value_error("queue_levels must be >= 0");
+    check_sorted(queue_times, "queue_times");
     Engine e(tick, label_ticks, shadow_size, horizon_ns, sample_levels, queue_levels, order_tracks, track_horizon_ns,
              fill_lot_rounding, truth_record_price);
     {
@@ -1056,7 +1082,7 @@ py::dict run(py::array_t<uint64_t, py::array::c_style | py::array::forcecast> ts
 }  // namespace mboq
 
 PYBIND11_MODULE(_core, m) {
-    m.doc() = "mbo-queue C++20 core (SPEC.md v0.5)";
+    m.doc() = "mbo-queue C++20 core (SPEC.md v0.7)";
     m.def("run", &mboq::run,
           "Run book rebuild, FIFO check, shadows, estimators, labels, samples, queue snapshots and order tracks");
 }

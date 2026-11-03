@@ -4,6 +4,37 @@ Versions follow SPEC.md: package version 0.N.x implements SPEC v0.N. Every versi
 Python reference (`mboq.reference`) and the C++ core (`mboq._core`) bitwise equal, and every
 additive feature is off by default so earlier outputs are unchanged (checked by stored digests).
 
+## 0.7.1 (unreleased)
+
+Input validation and SPEC clarifications only. No rule changes: on every valid input the output of
+both engines is byte-identical to 0.7.0 (checked on 48 synthetic runs per engine, with every option
+on and action/side given as bytes, str and integer codes).
+
+- Malformed input now raises `ValueError`, with the same message, in the Python reference and the
+  C++ core. In 0.7.0 the two engines disagreed on these inputs, or the C++ core had undefined behaviour:
+  - an `A` or `M` record with a side other than `B` or `A` (Python raised `KeyError`, C++ booked the
+    order on the ask side). `C`, `R`, `T`, `F` and `N` records may still have side `N`, as in CME data.
+  - record columns of unequal length, or not 1-D (C++ read past the end of the shorter column);
+  - `sample_levels < 1` (C++ divided by zero) and `tick < 1` (C++ integer division by zero);
+  - unsorted `place_times` or `sample_times` (silently accepted; samples were read at the wrong
+    state). `queue_times` was already checked.
+  The C++ binding (`mboq._core.run`) runs the same checks, so it is safe to call directly.
+- Action and side codes are read by one function for both engines (`mboq.reference.code_array`):
+  bytes, str, integer codes 0-255 and object arrays of these. In 0.7.0 an object array of bytes was
+  silently ignored by the Python reference and rejected by the C++ core. Floats, bools,
+  multi-character codes and codes above 255 raise `ValueError`.
+- Order ids >= 2^63 in `labels["order_id"]` are stored as the int64 with the same bits, as queue
+  rows and tracks already were (the Python reference raised `OverflowError`; C++ was unchanged).
+- SPEC: section 1 lists the input checks; section 2 states that an implicit clear happens only if
+  the book is non-empty; section 8 states that times still pending at the end of a stream whose last
+  record lacks `F_LAST` read the final, possibly mid-event, state. Both describe what the engines
+  already did.
+- Tests: one hand test per check above (both engines raise the same exception and message), and a
+  randomized C++-vs-Python differential test on 400 seeded random streams with side-`N` `T` and `F`
+  records. CI: a new job runs the test suite and the benchmark smoke test against a C++ core built
+  with AddressSanitizer and UndefinedBehaviorSanitizer.
+- The module docstring of the C++ core now says SPEC v0.7 (it said v0.5).
+
 ## 0.7.0 (2026-10-14)
 
 - New `run()` option `truth_record_price` (SPEC v0.7, section 4; default off, so v0.6 outputs are

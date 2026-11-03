@@ -1766,6 +1766,221 @@ def test_v07_cpp_equals_reference_bitwise_with_truth_record_price():
     assert changed > 0
 
 
+# ---------------------------------------------------------------------------- 0.7.1 input validation
+def _engines_raise(call_ref, call_cpp, exc=ValueError):
+    """Both engines raise `exc` with the same message; returns the message."""
+    msgs = []
+    for f in [call_ref] + ([call_cpp] if HAVE_CORE else []):
+        try:
+            f()
+        except exc as e:
+            msgs.append(str(e))
+        else:
+            raise AssertionError(f"no {exc.__name__} raised")
+    assert len(set(msgs)) == 1, msgs
+    return msgs[0]
+
+
+def _ref_run(rec, tick=TICK, **kw):
+    ini = {k: kw.pop(k) for k in list(kw) if k in ("label_ticks", "shadow_size", "horizon_ns", "sample_levels")}
+    return Reference(tick=tick, **ini).run(rec, **kw)
+
+
+def _core_cols(rec):
+    """The seven record columns as the C++ binding takes them (for calling mboq._core.run directly)."""
+    cols = [np.ascontiguousarray(rec[k], dt) for k, dt in (("ts_event", np.uint64), ("order_id", np.uint64),
+                                                          ("price", np.int64), ("size", np.uint64), ("flags", np.uint8))]
+    return cols + [fast.code_array(rec["action"]), fast.code_array(rec["side"])]
+
+
+def _core_raises(*args):
+    from mboq import _core
+    try:
+        _core.run(*args)
+    except ValueError as e:
+        return str(e)
+    raise AssertionError("no ValueError from mboq._core.run")
+
+
+def test_v071_a_or_m_with_side_other_than_b_or_a_is_rejected_by_both_engines():
+    # Known answer: an A or M record whose side is not B or A (e.g. N) raises ValueError naming the record index
+    # and the side code in both engines (0.7.0: Python KeyError, C++ booked it on the ask side). Real CME data
+    # carries side N only on R, T, F and N-action records; those are untouched: the control stream below, with
+    # side N on every such record, runs in both engines with identical output and the book the B/A records give.
+    cases = [BASE + [(4, "A", "N", 103, 1, 7, L)],                         # add with side N
+             BASE + [(4, "M", "N", 100, 3, 1, L)],                         # resting bid modified to side N
+             BASE + [(4, "M", "N", 100, 3, 77, L)],                        # M for an unknown id with side N
+             BASE + [(4, "A", " ", 100, 3, 7, L)]]                         # any other code
+    for rows in cases:
+        rec = recs(rows)
+        msg = _engines_raise(lambda: _ref_run(rec), lambda: fast.run(rec, tick=TICK))
+        assert msg == f"record 3: action {rows[3][1]} needs side B or A, got side code {ord(rows[3][2])}", msg
+    ctrl = BASE + [(4, "N", "N", 0, 0, 0, L), (5, "T", "N", 100, 1, 0, 0), (5, "F", "N", 100, 1, 1, 0),
+                   (5, "C", "B", 100, 1, 1, L), (6, "R", "N", 0, 0, 0, SNAP), (6, "A", "B", 100, 4, 5, SNAP | L)]
+    for trp in (False, True):
+        runs = both(recs(ctrl), place_times=[3], sample_times=[5, 7], queue_times=[5], horizon_ns=100,
+                    truth_record_price=trp)
+        for r in runs:
+            assert r["samples"][0][:3].tolist() == [100 * TICK, 4, 2] and r["samples"][1][:3].tolist() == [100 * TICK, 4, 1]
+            assert r["stats"]["fills"] == 1 and r["stats"]["trades"] == 1 and r["stats"]["clears"] == 1
+        if HAVE_CORE:
+            _assert_same_output(runs[0], runs[1], ("side-N control", trp))
+
+
+def test_v071_order_ids_at_or_above_2_63_are_int64_bits_in_every_output():
+    # Known answer: an order id >= 2^63 is stored as the int64 with the same bits in labels, queue rows and tracks,
+    # in both engines (0.7.0: the Python labels raised OverflowError); .view(np.uint64) recovers the id.
+    big, top = (1 << 63) + 5, (1 << 64) - 1
+    rows = [(1, "A", "B", 100, 3, big, L), (2, "A", "B", 100, 2, top, L), (3, "A", "A", 101, 5, 9, L)]
+    runs = both(recs(rows), queue_times=[3], order_tracks=True)
+    for r in runs:
+        assert r["labels"]["order_id"].view(np.uint64).tolist() == [big, top, 9]
+        assert r["queue"][:, QUEUE_COLUMNS.index("order_id")].view(np.uint64).tolist() == [big, top, 9]
+        assert r["tracks"]["order_id"].view(np.uint64).tolist() == [big, top, 9]
+    if HAVE_CORE:
+        _assert_same_output(runs[0], runs[1], "big ids")
+        _assert_same_tracks(runs[0], runs[1], "big ids")
+
+
+def test_v071_action_and_side_code_dtypes_read_the_same_in_both_engines():
+    # Known answer: action/side given as bytes (S1, S2), str (U1), integer codes or object arrays of bytes or str all
+    # give the S1 output in both engines (0.7.0: an object array of bytes was silently ignored by Python and rejected
+    # by C++). Floats, bools, multi-character codes and codes above 255 raise ValueError in both.
+    rows = BASE + [(4, "A", "B", 100, 4, 3, L), (10, "T", "A", 100, 6, 0, 0), (10, "F", "B", 100, 3, 1, 0),
+                   (10, "F", "N", 100, 2, 2, 0), (10, "C", "B", 100, 3, 1, 0), (10, "C", "B", 100, 2, 2, 0),
+                   (10, "M", "B", 100, 3, 3, L)]
+    rec = recs(rows)
+    kw = dict(place_times=[4], sample_times=[11], horizon_ns=100)
+    want = both(rec, **kw)[0]
+    assert want["stats"]["fills"] == 2 and want["stats"]["adds"] == 4
+    s1 = {k: rec[k] for k in ("action", "side")}
+    variants = {"U1": {k: v.astype("U1") for k, v in s1.items()},
+                "uint8": {k: np.frombuffer(v.tobytes(), dtype=np.uint8).copy() for k, v in s1.items()},
+                "int64": {k: np.frombuffer(v.tobytes(), dtype=np.uint8).astype(np.int64) for k, v in s1.items()},
+                "object-bytes": {k: np.array(list(v), dtype=object) for k, v in s1.items()},
+                "object-str": {k: np.array([x.decode() for x in v], dtype=object) for k, v in s1.items()},
+                "S2": {k: v.astype("S2") for k, v in s1.items()}}
+    for name, cols in variants.items():
+        for r in both({**rec, **cols}, **kw):
+            _assert_same_output(want, r, name)
+    bad = {"float": np.frombuffer(s1["side"].tobytes(), dtype=np.uint8).astype(np.float64),
+           "bool": np.ones(len(rows), dtype=bool),
+           "two chars": np.array(["BB"] * len(rows)),
+           "code > 255": np.full(len(rows), 300, dtype=np.int64),
+           "object float": np.array([66.0] * len(rows), dtype=object)}
+    for name, col in bad.items():
+        r2 = {**rec, "side": col}
+        _engines_raise(lambda: _ref_run(r2), lambda: fast.run(r2, tick=TICK))
+
+
+def test_v071_unequal_or_non_1d_record_columns_are_rejected():
+    # Known answer: a record column shorter or longer than ts_event, or not 1-D, raises ValueError in both engines
+    # and in the C++ binding called directly (0.7.0: undefined behaviour in C++; IndexError or silent in Python).
+    rec = recs(BASE)
+    for k in ("order_id", "price", "size", "flags", "action", "side"):
+        for col in (rec[k][:-1], np.concatenate([rec[k], rec[k][:1]]), rec[k].reshape(1, -1)):
+            r2 = {**rec, k: col}
+            msg = _engines_raise(lambda: _ref_run(r2), lambda: fast.run(r2, tick=TICK))
+            assert f"'{k}'" in msg, msg
+    if HAVE_CORE:
+        from mboq import _core
+        e = np.zeros(0, np.int64)
+        tail = (e, e, TICK, 5, 1, 100, 10, e, 5, False, 0, False, False)
+        cols = _core_cols(rec)
+        assert _core.run(*cols, *tail)["stats"]["adds"] == 3
+        for j in range(1, 7):
+            short = list(cols)
+            short[j] = short[j][:-1]
+            assert "has length 2, expected 3" in _core_raises(*short, *tail), j
+
+
+def test_v071_sample_levels_and_tick_below_one_are_rejected():
+    # Known answer: sample_levels < 1 (0.7.0: C++ divided by zero) and tick < 1 (C++ integer division by zero when a
+    # label's distance is computed) raise ValueError in both engines and in the C++ binding called directly.
+    rec = recs(BASE)
+    for sl in (0, -1):
+        _engines_raise(lambda: _ref_run(rec, sample_levels=sl), lambda: fast.run(rec, tick=TICK, sample_levels=sl))
+    for tick in (0, -TICK):
+        _engines_raise(lambda: _ref_run(rec, tick=tick), lambda: fast.run(rec, tick=tick))
+    if HAVE_CORE:
+        e = np.zeros(0, np.int64)
+        assert _core_raises(*_core_cols(rec), e, e, TICK, 5, 1, 100, 0, e, 5, False, 0, False, False) == \
+            "sample_levels must be >= 1"
+        assert _core_raises(*_core_cols(rec), e, e, 0, 5, 1, 100, 10, e, 5, False, 0, False, False) == \
+            "tick must be >= 1"
+
+
+def test_v071_unsorted_place_and_sample_times_are_rejected():
+    # Known answer: unsorted place_times or sample_times raise ValueError in both engines and in the C++ binding
+    # (0.7.0: accepted silently, and samples were read at the wrong state); duplicates stay allowed.
+    rec = recs(BASE)
+    for k in ("place_times", "sample_times"):
+        msg = _engines_raise(lambda: _ref_run(rec, **{k: [9, 4]}), lambda: fast.run(rec, tick=TICK, **{k: [9, 4]}))
+        assert msg == f"{k} must be sorted (non-decreasing)"
+        runs = both(rec, **{k: [2, 2, 4]})
+        if HAVE_CORE:
+            _assert_same_output(runs[0], runs[1], k)
+    if HAVE_CORE:
+        e, uns = np.zeros(0, np.int64), np.array([9, 4], np.int64)
+        for pt, st, name in ((uns, e, "place_times"), (e, uns, "sample_times")):
+            assert _core_raises(*_core_cols(rec), pt, st, TICK, 5, 1, 100, 10, e, 5, False, 0, False, False) == \
+                f"{name} must be sorted (non-decreasing)"
+
+
+def _random_stream(rng, n, nid=12, npx=7):
+    """An arbitrary (not exchange-consistent) MBO stream: every action, unknown ids, size-0 C/M, random F_LAST,
+    F_SNAPSHOT and F_MAYBE_BAD_BOOK, ts_event that sometimes steps back. A/M sides are B or A (any other side is an
+    error, SPEC 1); C, R, T, F and N records get B, A or N, so T and F records with side N occur."""
+    a = rng.choice(np.array(list("ACMRTFN")), n, p=[.30, .16, .18, .01, .14, .18, .03])
+    am = (a == "A") | (a == "M")
+    s = np.where(am, rng.choice(np.array(list("BA")), n), rng.choice(np.array(list("BAN")), n))
+    ts = np.cumsum(rng.integers(0, 3, n)).astype(np.int64) + 1000
+    if rng.random() < 0.3:
+        ts = ts - rng.integers(0, 3, n) * (rng.random(n) < 0.1)
+    fl = (np.where(rng.random(n) < rng.choice([0.3, 0.6, 1.0]), L, 0) | np.where(rng.random(n) < 0.03, SNAP, 0)
+          | np.where(rng.random(n) < 0.02, 4, 0))
+    rec = {"ts_event": ts.astype(np.uint64), "order_id": rng.integers(1, nid, n).astype(np.uint64),
+           "price": ((100 + rng.integers(-(npx // 2), npx // 2 + 1, n)) * TICK).astype(np.int64),
+           "size": rng.integers(0, 6, n).astype(np.uint32), "flags": fl.astype(np.uint8),
+           "action": a.astype("S1"), "side": s.astype("S1")}
+    return rec, ts
+
+
+def test_v071_cpp_equals_reference_bitwise_on_random_streams():
+    # Known answer: identical output from both engines (every counter and array; dtype, shape and bytes, tracks
+    # included) on 400 seeded random streams of 200 records with random options (label_ticks, shadow size, horizons,
+    # sample and queue depth, track horizon, lot rounding, truth_record_price). The totals show the comparison is not
+    # vacuous: side-N T and F records, unknown-id fills, truly filled shadows, FIFO ranks > 0, tracks and scored E0
+    # rows all occur.
+    if not HAVE_CORE:
+        print("   (skipped: C++ core not built)")
+        return
+    tot = dict(side_n_tf=0, fill_unknown=0, true_filled=0, rank_pos=0, tracks=0, e0_scored=0)
+    for seed in range(400):
+        rng = np.random.default_rng(71_000 + seed)
+        rec, ts = _random_stream(rng, 200)
+        pt = np.sort(rng.integers(ts.min(), ts.max() + 2, 30))
+        st = np.sort(rng.integers(ts.min() - 1, ts.max() + 2, 8))
+        kw = dict(label_ticks=int(rng.integers(-1, 4)), shadow_size=int(rng.integers(1, 4)),
+                  horizon_ns=int(rng.integers(1, 60)), sample_levels=int(rng.integers(1, 5)))
+        H = int(rng.choice([0, 1, 7, 40]))
+        rk = dict(place_times=pt, sample_times=st, queue_times=st, queue_levels=int(rng.integers(0, 4)),
+                  order_tracks=True, track_horizon_ns=H, fill_lot_rounding=bool(rng.random() < 0.5),
+                  truth_record_price=bool(rng.random() < 0.5))
+        a = Reference(tick=TICK, **kw).run(rec, **rk)
+        b = fast.run(rec, tick=TICK, **kw, **rk)
+        _assert_same_output(a, b, seed)
+        (_assert_same_tracks_h if H > 0 else _assert_same_tracks)(a, b, seed)
+        tot["side_n_tf"] += int((np.isin(rec["action"], [b"T", b"F"]) & (rec["side"] == b"N")).sum())
+        tot["fill_unknown"] += a["stats"]["fill_unknown"]
+        tot["true_filled"] += int(a["shadows"]["true_filled"].sum())
+        tot["rank_pos"] += int((a["fifo_rank"] > 0).sum())
+        tot["tracks"] += len(a["tracks"]["order_id"])
+        if H > 0:
+            tot["e0_scored"] += int((a["tracks"]["e0"] >= 0).all(axis=1).sum())
+    assert min(tot.values()) > 100, tot
+
+
 if __name__ == "__main__":
     tests =[(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     failed = 0

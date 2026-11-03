@@ -158,7 +158,15 @@ Everything below runs in the test suite or the scripts in this repository, on sy
 * **Two independent implementations, bitwise equal.** The Python reference (explicit ahead sets)
   and the C++20 core (priority stamps and intrusive lists) return byte-identical output (every
   counter and array: dtype, shape and bytes) on randomized streams with every feature switched on.
-  The C++ core is compiled with `-ffp-contract=off` so no fused multiply-add breaks this.
+  The C++ core is compiled with `-ffp-contract=off` so no fused multiply-add breaks this. One of
+  these tests runs 400 seeded random streams that no exchange would produce (every action, unknown
+  ids, side `N` on `T` and `F` records, random event boundaries and snapshot flags) with random
+  options.
+* **Input validation, the same in both engines.** Malformed input raises `ValueError` in both
+  engines instead of crashing or being read differently: record columns of unequal length, an `A`
+  or `M` record with a side other than `B`/`A`, `tick` or `sample_levels` below 1, and unsorted
+  `place_times`, `sample_times` or `queue_times`. CI also runs the test suite against a C++ core
+  built with AddressSanitizer and UndefinedBehaviorSanitizer.
 * **Hand-computed scenarios** for each rule: cancel ahead vs behind, priority loss, trade-through,
   FIFO violations, label outcomes, iceberg refills, out-of-order fills, every track and horizon case.
 * **No look-ahead.** Book samples and queue snapshots before time T do not change when every record
@@ -174,7 +182,7 @@ Everything below runs in the test suite or the scripts in this repository, on sy
 
 ```bash
 bash scripts/fetch_test_data.sh      # optional: the DBN decode test
-python tests/test_mboq.py            # 53 tests (or: pytest tests)
+python tests/test_mboq.py            # 60 tests (or: pytest tests)
 python scripts/synthetic_validation.py
 ```
 
@@ -211,7 +219,8 @@ stay library calls so that the C++ output matches Python bit for bit.
 
 ## Research use
 
-mbo-queue underpins an order-level study of liquidity in CME energy futures (paper forthcoming).
+mbo-queue underpins an order-level study of liquidity in CME energy futures (working paper:
+https://ssrn.com/abstract=7609738).
 This repository contains only the engine, its synthetic tests and generic scripts; no market data
 and no results computed from market data.
 
@@ -220,7 +229,7 @@ and no results computed from market data.
 See [CITATION.cff](CITATION.cff), or:
 
 > Dani, A. (2026). mbo-queue: exact FIFO queue reconstruction from CME market-by-order data and a
-> benchmark of MBP queue-position estimators (version 0.7.0). https://github.com/AnshDani2004/mbo-queue
+> benchmark of MBP queue-position estimators (version 0.7.1). https://github.com/AnshDani2004/mbo-queue
 
 ## Layout
 

@@ -25,14 +25,93 @@ TRACK_COLUMNS = ["label_index", "order_id", "side", "price", "t_start", "size0",
 TRACK_HORIZON_COLUMNS = ["est_stop_t", "e0"]
 
 
+# the SPEC section 1 record columns, in the order the C++ core takes them
+REC_COLUMNS = ("ts_event", "order_id", "price", "size", "flags", "action", "side")
+
+
+def check_sorted_times(times, name) -> np.ndarray:
+    """Validate a requested-times input (shared by both engines): int64, sorted non-decreasing."""
+    t = np.asarray(times, dtype=np.int64).reshape(-1)
+    if len(t) > 1 and bool((np.diff(t) < 0).any()):
+        raise ValueError(f"{name} must be sorted (non-decreasing)")
+    return t
+
+
 def check_queue_args(queue_times, queue_levels) -> np.ndarray:
     """Validate the SPEC section 8 inputs (shared by both engines); return queue_times as int64."""
     qt = np.asarray(queue_times, dtype=np.int64).reshape(-1)
     if int(queue_levels) < 0:
         raise ValueError("queue_levels must be >= 0")
-    if len(qt) > 1 and bool((np.diff(qt) < 0).any()):
-        raise ValueError("queue_times must be sorted (non-decreasing)")
-    return qt
+    return check_sorted_times(qt, "queue_times")
+
+
+def check_engine_args(tick, sample_levels) -> None:
+    """Validate the instrument tick and the SPEC 7 depth (shared by both engines): both ints >= 1."""
+    if int(tick) < 1:
+        raise ValueError("tick must be >= 1")
+    if int(sample_levels) < 1:
+        raise ValueError("sample_levels must be >= 1")
+
+
+def check_records(rec) -> int:
+    """Validate the SPEC 1 columns (shared by both engines): each 1-D, all of the same length; return it."""
+    n = None
+    for k in REC_COLUMNS:
+        shape = np.shape(rec[k])
+        if len(shape) != 1:
+            raise ValueError(f"record column '{k}' must be 1-D")
+        if n is None:
+            n = shape[0]
+        elif shape[0] != n:
+            raise ValueError(f"record column '{k}' has length {shape[0]}, expected {n} (the length of ts_event)")
+    return n
+
+
+def _one_code(x, name) -> int:
+    if isinstance(x, (bytes, np.bytes_)):
+        if len(x) > 1:
+            raise ValueError(f"{name} codes must be one character, got {x!r}")
+        return x[0] if len(x) else 0
+    if isinstance(x, (str, np.str_)):
+        if len(x) > 1 or (len(x) == 1 and ord(x) > 255):
+            raise ValueError(f"{name} codes must be one character with code 0-255, got {x!r}")
+        return ord(x) if len(x) else 0
+    if isinstance(x, (int, np.integer)) and not isinstance(x, (bool, np.bool_)):
+        if not 0 <= int(x) <= 255:
+            raise ValueError(f"{name} codes must be in 0-255, got {int(x)}")
+        return int(x)
+    raise ValueError(f"{name} codes must be bytes, str or integers, got {type(x).__name__}")
+
+
+def code_array(arr, name="code") -> np.ndarray:
+    """The SPEC 1 action or side column as uint8 codes; both engines read their codes from here.
+    Accepts bytes (dtype S), str (dtype U), integers 0-255, or an object array of those. Each element is
+    one character (an empty one is code 0). Anything else (floats, bools, longer strings) is a ValueError."""
+    a = np.asarray(arr).reshape(-1)
+    kind = a.dtype.kind
+    if kind == "S":
+        if a.dtype.itemsize > 1 and len(a) and int(np.char.str_len(a).max()) > 1:
+            raise ValueError(f"{name} codes must be one character")
+        return np.frombuffer(a.astype("S1").tobytes(), dtype=np.uint8)
+    if kind == "U":
+        if a.dtype.itemsize > 4 and len(a) and int(np.char.str_len(a).max()) > 1:
+            raise ValueError(f"{name} codes must be one character")
+        u = np.ascontiguousarray(a.astype("U1")).view(np.uint32)
+        if len(u) and int(u.max()) > 255:
+            raise ValueError(f"{name} codes must be one character with code 0-255")
+        return u.astype(np.uint8)
+    if kind in "iu":
+        if len(a) and (int(a.min()) < 0 or int(a.max()) > 255):
+            raise ValueError(f"{name} codes must be in 0-255")
+        return a.astype(np.uint8)
+    if kind == "O":
+        return np.array([_one_code(x, name) for x in a], dtype=np.uint8)
+    raise ValueError(f"{name} codes must be bytes, str or integers, got dtype {a.dtype}")
+
+
+def _i64(oid: int) -> int:
+    """A uint64 order id as the int64 with the same bits (ids >= 2^63 read negative), as the C++ core stores it."""
+    return oid - (1 << 64) if oid >= (1 << 63) else oid
 
 
 def check_track_horizon(track_horizon_ns) -> int:
@@ -107,6 +186,7 @@ class Reference:
     truth_record = False  # SPEC v0.7 truth_record_price (sensitivity; set by run())
     def __init__(self, tick: int, label_ticks: int = 5, shadow_size: int = 1, horizon_ns: int = 60_000_000_000,
                  sample_levels: int = 10):
+        check_engine_args(tick, sample_levels)
         self.tick, self.label_ticks, self.S, self.H = tick, label_ticks, shadow_size, horizon_ns
         self.N = sample_levels
         self.books = {"B": {}, "A": {}}          # side -> price -> OrderedDict(oid -> order)
@@ -530,7 +610,7 @@ class Reference:
                 n, total = len(lv), sum(o["size"] for o in lv.values())
                 ahead = 0
                 for rank, (oid, o) in enumerate(lv.items()):
-                    rows.append([q, oid - (1 << 64) if oid >= (1 << 63) else oid, 1 if side == "B" else -1, px,
+                    rows.append([q, _i64(oid), 1 if side == "B" else -1, px,
                                  li, rank, o["size"], ahead, n, total])
                     ahead += o["size"]
         return rows
@@ -547,15 +627,15 @@ class Reference:
         self.track_h = check_track_horizon(track_horizon_ns)
         self.lot_round = bool(fill_lot_rounding)      # SPEC v0.6: estimated fills rounded to whole lots (>= 0.5 lot)
         self.truth_record = bool(truth_record_price)  # SPEC v0.7: shadow truth at the F record's side and price
-        place_times = np.asarray(place_times, dtype=np.int64)
-        sample_times = np.asarray(sample_times, dtype=np.int64)
+        n = check_records(rec)
+        place_times = check_sorted_times(place_times, "place_times")
+        sample_times = check_sorted_times(sample_times, "sample_times")
         queue_times = check_queue_args(queue_times, queue_levels)
         queue_levels = int(queue_levels)
         pi = si = qi = 0
         samples, queue = [], []
-        n = len(rec["ts_event"])
-        act = _codes(rec["action"])
-        sid = _codes(rec["side"])
+        act = _codes(rec["action"], "action")
+        sid = _codes(rec["side"], "side")
         for i in range(n):
             self._ts = int(rec["ts_event"][i])
             # samples are taken at boundaries; emit any sample time strictly before this record
@@ -573,6 +653,8 @@ class Reference:
             if snap and not self._prev_snapshot and self._prev_action != "R" and self.orders:
                 self.stats["implicit_clear"] += 1
                 self._clear()
+            if (a == "A" or a == "M") and s != "B" and s != "A":     # 0.7.1: rejected, as in C++
+                raise ValueError(f"record {i}: action {a} needs side B or A, got side code {ord(s)}")
             if a == "A":
                 self._on_add(oid, s, px, sz, snap)
             elif a == "C":
@@ -626,7 +708,7 @@ class Reference:
                 trk.stop, trk.stop_t = "end", -1
         out = {
             "label_index": i64([t.li for t in T]),
-            "order_id": i64([t.oid - (1 << 64) if t.oid >= (1 << 63) else t.oid for t in T]),
+            "order_id": i64([_i64(t.oid) for t in T]),
             "side": i64([1 if t.side == "B" else -1 for t in T]),
             "price": i64([t.price for t in T]),
             "t_start": i64([t.t_start for t in T]),
@@ -671,7 +753,8 @@ class Reference:
                 "abserr_sum": np.array([x.abserr for x in sh], dtype=np.float64).reshape(-1, K),
                 "nobs": np.array([x.nobs for x in sh], dtype=np.int64),
             },
-            "labels": {k: np.array([lab[k] if k != "outcome" else OUTCOMES.index(lab[k]) for lab in self.labels],
+            "labels": {k: np.array([OUTCOMES.index(lab[k]) if k == "outcome" else
+                                    _i64(lab[k]) if k == "order_id" else lab[k] for lab in self.labels],
                                    dtype=np.int64)
                        for k in ["order_id", "t_add", "price", "size", "dist", "rank_at_add", "size_ahead_at_add",
                                  "outcome", "t_end", "filled_qty"]},
@@ -681,11 +764,9 @@ class Reference:
         return out
 
 
-def _codes(arr):
-    """Normalize action/side arrays (bytes 'S1', ints, or str) to a list of 1-char str."""
-    a = np.asarray(arr)
-    if a.dtype.kind == "S":
-        return [x.decode() for x in a]
-    if a.dtype.kind in "iu":
-        return [chr(int(x)) for x in a]
-    return [str(x) for x in a]
+_CHR = [chr(c) for c in range(256)]
+
+
+def _codes(arr, name="code"):
+    """The action/side column as a list of 1-char str, from the same uint8 codes the C++ core reads."""
+    return [_CHR[c] for c in code_array(arr, name).tolist()]

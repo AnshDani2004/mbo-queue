@@ -2,11 +2,17 @@
 
 > **Note on this public copy.** With default settings, the rules are identical to the frozen v0.6
 > used in the study; `truth_record_price` is an optional sensitivity added in v0.7. The study is of
-> CME energy futures, and this engine underpins it (paper forthcoming). This copy only removes
-> references to private study files and one example count computed from market data; no rule,
-> definition or default differs from the study's copy.
+> CME energy futures, and this engine underpins it (working paper: https://ssrn.com/abstract=7609738).
+> This copy only removes references to private study files and one example count computed from
+> market data; no rule, definition or default differs from the study's copy.
 
 **Change log**
+
+* **v0.7, package 0.7.1** (2026-11-02; input checks and two clarifications, no rule change: every valid input gives
+  byte-identical output) section 1: the input checks below, the same in both engines. Section 2: the implicit clear
+  needs a non-empty book (what both engines always did). Section 8: times still pending when a stream ends without
+  `F_LAST` read the final, mid-event state (what both engines always did). Section 6: label ids >= 2^63 are int64
+  bits, as in sections 8 and 9 (the Python reference raised `OverflowError` before).
 
 * **v0.7** (2026-10-13; a sensitivity, not part of the frozen v0.6 rules) section 4 only: new `run()` parameter
   `truth_record_price` (default False = v0.6 exactly, byte-identical; tested). With True, a known-id `F` record
@@ -67,6 +73,15 @@ A single-instrument stream of Databento MBO records in file order, with fields
 `flags` (uint8), `action` (`A C M R T F N`), `side` (`A` ask, `B` bid, `N` none).
 Flags: `F_LAST=128`, `F_SNAPSHOT=32`, `F_MAYBE_BAD_BOOK=4`.
 
+**Input checks (package 0.7.1).** Both engines raise `ValueError`, with the same message, and produce no output for:
+record columns that are not 1-D or not all of the same length; an `A` or `M` record whose side is not `B` or `A`
+(the record index and side code are named); action or side codes that are not one character (bytes, str, or
+integers 0-255, also in object arrays; floats and bools are rejected); `tick` < 1; `sample_levels` < 1;
+`place_times`, `sample_times` or `queue_times` not sorted non-decreasing; `queue_levels` < 0; `track_horizon_ns` < 0.
+`C`, `R`, `T`, `F` and `N` records may carry any side; on CME data side `N` appears on `R`, `T`, `F` and `N` records,
+and those are processed exactly as before (`T` side `N` matches no estimator; `F` side `N` under
+`truth_record_price` takes the order's side). The C++ binding (`mboq._core.run`) runs the same checks.
+
 An **event** is a run of records ending with a record that has `F_LAST` set. Book state is only
 read at event boundaries (after an `F_LAST` record), because intermediate states are not
 consistent (Databento convention).
@@ -98,7 +113,11 @@ exchange did. A partial fill followed by an `M` to the post-fill size is unaffec
 
 **Implicit clear.** If a record with `F_SNAPSHOT` arrives while the previous record did not have
 `F_SNAPSHOT` and the previous record was not `R`, the book is cleared first (count
-`implicit_clear`). This guards against a mid-stream snapshot without a preceding `R`.
+`implicit_clear`). This guards against a mid-stream snapshot without a preceding `R`. The implicit clear needs a
+non-empty book: a snapshot record that arrives into an empty book clears nothing and is not counted, so shadows
+(section 4) and the estimators of tracks running on past a fill (section 9, v0.5) that are live at that moment are
+not ended by it (they end `cleared` only through an `R` or an implicit clear of a non-empty book). This matters
+only for a stream that empties the book and then sends a snapshot without an `R`.
 
 **A1.** Snapshot `A` records arrive in queue (priority) order within each price level.
 **A2.** On CME, `F` records carry the resting order's id and the filled quantity, and `T` records
@@ -205,7 +224,8 @@ price, size, distance in ticks (0 = at the best or better), orders and size ahea
 `cleared` (R), or `censored` (end of stream). Filled quantity is the sum of `F` sizes on that id
 during the life. Distance uses the instrument tick (`tick` parameter, in price units). A native
 iceberg's displayed tranche is one life: the refill ends it as `requeued` (its filled quantity
-includes the fills that emptied it) and starts a new life at the back of the level.
+includes the fills that emptied it) and starts a new life at the back of the level. Label order ids are
+uint64 bits stored as int64 (ids >= 2^63 read negative), as in sections 8 and 9.
 
 ## 7. Book samples
 
@@ -227,14 +247,17 @@ t) reads the book at the last event boundary with `ts_event <= t`. Operationally
 before record i is processed, every pending queue time t with `t < ts_event[i]` is emitted, in
 order, provided the engine is at an event boundary (record i-1 had `F_LAST`, or i = 0); a pending
 time is otherwise held until the next boundary. Times still pending after the last record are
-emitted from the final state. Hence:
+emitted from the final state. If the last record lacks `F_LAST`, the stream ends inside an event and
+that final state is the open event's intermediate state: it includes the event's records so far. This
+is the one case in which a mid-event state is read (sections 7 and 8 alike); a stream that ends at an
+event boundary is not affected. Hence:
 * a record with `ts_event == t` is included, a record with `ts_event > t` is not, and records after
   t cannot change the snapshot (no look-ahead);
 * t before the first record gives the empty book (no rows for that q);
-* an intermediate (mid-event) state is never read. If one event's records straddle t (a record
-  with `ts_event <= t` followed in the same event by one with `ts_event > t`), the snapshot is
-  taken after that whole event, exactly like a section 7 sample. This requires `ts_event` to differ
-  inside one event; the synthetic exchange never does that.
+* apart from that end-of-stream case, an intermediate (mid-event) state is never read. If one
+  event's records straddle t (a record with `ts_event <= t` followed in the same event by one with
+  `ts_event > t`), the snapshot is taken after that whole event, exactly like a section 7 sample.
+  This requires `ts_event` to differ inside one event; the synthetic exchange never does that.
 
 **Rows.** For each snapshot q, then side (bid first, then ask, as in section 7), then level index
 l = 0 .. min(`queue_levels`, number of non-empty levels on that side) - 1 (l = 0 is the best price;
